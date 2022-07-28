@@ -4,6 +4,8 @@ import json
 import time
 from wsgiref.simple_server import WSGIRequestHandler
 import mysql
+import socket
+
 import conndbmod
 
 #To add uncertain parameters in different columns to an entry
@@ -24,7 +26,7 @@ def db_search_func(connection, query):
     connection.close()
 
 ip_tobe_added = "1.2.3.4"
-uuid_tobe_added = "1234544"
+uuid_tobe_added = "123454442"
 
 query_insert_ip_only = "INSERT INTO NODES.nodeinfo (ip) VALUES (%s)"
 query_insert_ip_uuid = "INSERT INTO NODES.nodeinfo (ip,uuid) VALUES (%s,%s)"
@@ -60,15 +62,18 @@ def db_pre_deduplicate(connection, para_query_update_uuid, para_query_update_ip,
                 print("Same ip in DB, updating UUID!")
                 db_crud_func(connection, para_query_update_uuid, new_uuid, new_ip)
                 i=i+1
+                break
             
         else:
             if new_uuid != db_uuid_ip_list[i][1]:
                 print("This is a whole new host! Will be added to the DB")
                 i=i+1
+                break
             else:
                 print("Same UUID in DB, updating Host!")
                 db_crud_func(connection, para_query_update_ip, new_ip, new_uuid)
                 i = i+1
+                break
             # print(db_uuid_ip_list[i][0])
             # print(i)
             # i = i+1
@@ -76,3 +81,33 @@ def db_pre_deduplicate(connection, para_query_update_uuid, para_query_update_ip,
 db_pre_deduplicate(db_connection, query_update_uuid, query_update_ip, ip_list, ip_tobe_added, uuid_tobe_added)
 
 db_connection.close()
+
+##############################
+#Accepting NW connection part
+##############################
+
+localip = '192.168.100.137'
+localport = 5001 #port can't be str
+localipandport = (localip, localport)
+monitoring = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+
+
+def client_inbound_connection(nw_conn_monitor, para_localipandport):
+    nw_conn_monitor.bind(para_localipandport)
+    nw_conn_monitor.listen()
+    while True:
+            (incomingconn, clientip) = nw_conn_monitor.accept()
+            time_stamp = int(time.time())
+            while True:
+                data = incomingconn.recv(1024)
+                print(data)
+                recv_json = json.loads(data)
+                print(f"json in func{recv_json}")
+                print(type(recv_json))
+
+                client_ip_address = recv_json["clientipkey"]
+                client_uuid = recv_json["uuid"]
+                print(f"in the func {client_ip_address}, {client_uuid}")
+                return client_ip_address, client_uuid
+
+ip_tobe_added, uuid_tobe_added = client_inbound_connection(monitoring, localipandport)
