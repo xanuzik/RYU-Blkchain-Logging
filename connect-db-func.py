@@ -1,3 +1,4 @@
+from asyncio.windows_events import NULL
 from ipaddress import ip_address
 from operator import mod
 import json
@@ -7,110 +8,139 @@ import mysql
 import socket
 import conndbmod
 
-#To add uncertain parameters in different columns to an entry
+#Database operation with arguments
 def db_crud_func(connection, query, *args): 
 
     cur=connection.cursor()
     cur.execute(query,(*args,))
-#    result = cur.fetchall()
-#    return result
-#    connection.close() #close the connection after making the amendment
-
-#The function to query DB without arguments
+    result = cur.fetchall()
+    connection.close() #close the connection after making the amendment
+    return result
+    
+#Database operation without arguments
 def db_search_func(connection, query):
     cur = connection.cursor()
     cur.execute(query)
     result = cur.fetchall()
+    connection.close()
     return result
-#    connection.close()
-
-ip_tobe_added = "2.2.3.4"
-uuid_tobe_added = "123aaa42"
 
 query_insert_ip_only = "INSERT INTO NODES.nodeinfo (ip) VALUES (%s)"
 query_insert_ip_uuid = "INSERT INTO NODES.nodeinfo (ip,uuid) VALUES (%s,%s)"
-query_insert_ip_bin_uuid_time =  "INSERT into NODES.nodeinfo (ip,IPv4BIN,uuid,note) VALUES (%s,INET6_ATON(%s),%s,now())" #last two arguments are the same, using the IP twice
+query_insert_ip_bin_uuid_timestamp =  "INSERT into NODES.nodeinfo (ip,IPv4BIN,timestamp,uuid) VALUES (%s,INET6_ATON(%s),%s,%s)"
+query_insert_ip_bin_uuid_timestamp_date =  "INSERT into NODES.nodeinfo (ip,IPv4BIN,timestamp,uuid,date) \
+    VALUES (%s,INET6_ATON(%s),%s,%s,now())" #last two arguments are the same, using the IP twice
+
 query_update_uuid = """UPDATE nodeinfo SET uuid = %s WHERE ip = %s"""
 query_update_ip = """UPDATE nodeinfo SET ip = %s WHERE uuid = %s"""
+
 query_list_ip_uuid = "SELECT ip, uuid FROM nodeinfo"
+query_list_ip = "SELECT ip FROM nodeinfo"
+
+query_search_ip = "SELECT * FROM nodeinfo WHERE ip = %s"
+query_search_uuid = "SELECT * FROM nodeinfo WHERE uuid = %s"
+
+query_delete_entry_based_on_timestamp = "DELETE FROM nodeinfo WHERE timestamp = %s"
+
+query_dedup_ip = "SELECT ip FROM nodeinfo GROUP BY ip HAVING COUNT(*) > 1;"
+query_dedup_uuid = "SELECT uuid FROM nodeinfo GROUP BY uuid HAVING COUNT(*) > 1;"
+
 
 db_connection = conndbmod.connecting_to_db()
-
-db_crud_func(db_connection, query_insert_ip_bin_uuid_time, ip_tobe_added, ip_tobe_added,uuid_tobe_added)
-
-list_ip_column = "SELECT ip FROM nodeinfo"
+#list_ip_column = "SELECT ip FROM nodeinfo"
 ip_list = (db_search_func(db_connection,query_list_ip_uuid)) #get a list of ip and uuid
 
-print(f"ip list is {ip_list}")
-print(len(ip_list))
+
+###########################
+# new deduplicate         #
+###########################
 
 
 # To judge if the new IP/UUID already exits in the DB
 
-def db_pre_deduplicate(connection, para_query_update_uuid, para_query_update_ip, para_query_insert_ip_bin_uuid_time, db_uuid_ip_list, new_ip, new_uuid): #1 the list of uuid and ip(may add timestamp later?), 2and3 are the info of the new node
-    
-    i = 0
-    
-    while i < len(db_uuid_ip_list):
-        
-        if new_ip == db_uuid_ip_list[i][0]: #update uuid according to ip address, [i][0] is ip address
-            if new_uuid == db_uuid_ip_list[i][1]: #[i][1] is uuid
-                print("Same host in DB!")
-                break
-            else:
-                print("Same ip in DB, updating UUID!")
-                db_crud_func(connection, para_query_update_uuid, new_uuid, new_ip)
-                i=i+1
-                break
-            
+def dedup_after_adding_entry(connection, para_query_dedup_ip_or_uuid, para_query_search):
+    #para_dedup : is to find the ip/uuid whis appears more than once in the db
+    #para_search: is to list the entries according to the designated ip/uuid
+    cursor_dedup = connection.cursor() 
+    cursor_dedup.execute(para_query_dedup_ip_or_uuid)
+    dup_items = cursor_dedup.fetchall()
+    if len(dup_items)  == 0:
+        print("No duplicated entries")
+        connection.close()
+    else:
+        print("Folling item has multiple entries in DB")
+        print(dup_items)
+        selected_items = db_crud_func(connection,para_query_search, dup_items[0][0])
+        #the connection closed after listing the items using the crud_func
+        if selected_items[0][1] > selected_items[1][1]:
+            #reopen the connection
+            db_connection = conndbmod.connecting_to_db()
+            print ("first one is the new entry, deleting 2nd one")
+            db_crud_func(db_connection, query_delete_entry_based_on_timestamp, selected_items[1][2])
+            #connection closed
         else:
-            if new_uuid != db_uuid_ip_list[i][1]:
-                print("This is a whole new host! Will be added to the DB")
-                db_crud_func(connection, para_query_insert_ip_bin_uuid_time, ip_tobe_added, ip_tobe_added, uuid_tobe_added)
-                i=i+1
-                break
-            else:
-                print("Same UUID in DB, updating Host!")
-                db_crud_func(connection, para_query_update_ip, new_ip, new_uuid)
-                db_crud_func(connection,query_update_ip)
-                i = i+1
-                break
-            # print(db_uuid_ip_list[i][0])
-            # print(i)
-            # i = i+1
-
-# db_pre_deduplicate(db_connection, query_update_uuid, query_update_ip, ip_list, ip_tobe_added, uuid_tobe_added)
-
-#db_connection.close()
+            #reopen the connection
+            db_connection = conndbmod.connecting_to_db()
+            print ("2nd one large, deleting 1st one")
+            db_crud_func(db_connection, query_delete_entry_based_on_timestamp, selected_items[0][2])
+            #connection closed
+            
 
 ##############################
 #Accepting NW connection part
 ##############################
 
 localip = socket.gethostbyname(socket.gethostname())
+localip = "192.168.100.68"
 localport = 5001 #port can't be str
 localipandport = (localip, localport)
 monitoring = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 
 
-def client_inbound_connection(nw_conn_monitor, para_localipandport):
-    nw_conn_monitor.bind(para_localipandport)
-    nw_conn_monitor.listen()
+######################################
+##MAIN LOOP
+######################################
+def client_inbound_connection(para_conn_monitor, para_localipandport):
+    para_conn_monitor.bind(para_localipandport)
+    para_conn_monitor.listen()
+    
     while True:
-            (incomingconn, clientip) = nw_conn_monitor.accept()
-            time_stamp = int(time.time())
-            while True:
-                data = incomingconn.recv(1024)
-                print(data)
-                recv_json = json.loads(data)
-                print(f"json in func{recv_json}")
-                print(type(recv_json))
+            (incomingconn, clientip) = para_conn_monitor.accept()
+            #while True:
+            data = incomingconn.recv(1024)
+            print(data)
+            recv_json = json.loads(data)
 
-                client_ip_address = recv_json["clientipkey"]
-                client_uuid = recv_json["uuid"]
-                print(f"in the func {client_ip_address}, {client_uuid}")
-                return client_ip_address, client_uuid
+            print(type(recv_json["type"]))
 
-ip_tobe_added, uuid_tobe_added = client_inbound_connection(monitoring, localipandport)
+            client_type = recv_json["type"]
+            client_ip_address = recv_json["nodeip"]
+            client_timestamp = recv_json["nodetimestamp"]
+            client_uuid = recv_json["nodeuuid"]
+            
+            if client_type == "1":
+                db_connection = conndbmod.connecting_to_db()
+                db_crud_func(db_connection, query_insert_ip_bin_uuid_timestamp_date, \
+                    client_ip_address, client_ip_address, client_timestamp, client_uuid)
+                db_connection = conndbmod.connecting_to_db()
+                dedup_after_adding_entry(db_connection, query_dedup_ip, query_search_ip)
+            else:
+                pass
+            #print(f"in the func {client_ip_address}, {client_uuid}")
+            #return recv_json
+            #para_conn_monitor.close()
 
-db_pre_deduplicate(db_connection, query_update_uuid, query_update_ip, ip_list, ip_tobe_added, uuid_tobe_added)
+def send_node_info():#(para_net_conn, para_query):
+    db_connection = conndbmod.connecting_to_db()
+    ip_list = db_search_func(db_connection, query_list_ip)
+    i = 0
+    while i < len(ip_list):
+        print(len(ip_list))
+        print(type(ip_list[i][0]))
+        i = i + 1
+    
+
+send_node_info()
+
+
+#print(client_inbound_connection(monitoring,localipandport))
