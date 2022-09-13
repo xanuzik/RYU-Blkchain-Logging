@@ -10,7 +10,6 @@ import conndbmod
 
 #Database operation with arguments
 def db_crud_func(connection, query, *args): 
-
     cur=connection.cursor()
     cur.execute(query,(*args,))
     result = cur.fetchall()
@@ -45,17 +44,9 @@ query_delete_entry_based_on_timestamp = "DELETE FROM nodeinfo WHERE timestamp = 
 query_dedup_ip = "SELECT ip FROM nodeinfo GROUP BY ip HAVING COUNT(*) > 1;"
 query_dedup_uuid = "SELECT uuid FROM nodeinfo GROUP BY uuid HAVING COUNT(*) > 1;"
 
-
-db_connection = conndbmod.connecting_to_db()
-#list_ip_column = "SELECT ip FROM nodeinfo"
-ip_list = (db_search_func(db_connection,query_list_ip_uuid)) #get a list of ip and uuid
-
-
 ###########################
-# new deduplicate         #
+#Deduplicate Module       #
 ###########################
-
-
 # To judge if the new IP/UUID already exits in the DB
 
 def dedup_after_adding_entry(connection, para_query_dedup_ip_or_uuid, para_query_search):
@@ -72,7 +63,7 @@ def dedup_after_adding_entry(connection, para_query_dedup_ip_or_uuid, para_query
         print(dup_items)
         selected_items = db_crud_func(connection,para_query_search, dup_items[0][0])
         #the connection closed after listing the items using the crud_func
-        if selected_items[0][1] > selected_items[1][1]:
+        if selected_items[0][2] > selected_items[1][2]:
             #reopen the connection
             db_connection = conndbmod.connecting_to_db()
             print ("first one is the new entry, deleting 2nd one")
@@ -85,20 +76,30 @@ def dedup_after_adding_entry(connection, para_query_dedup_ip_or_uuid, para_query
             db_crud_func(db_connection, query_delete_entry_based_on_timestamp, selected_items[0][2])
             #connection closed
             
-
 ##############################
-#Accepting NW connection part
+#Send infomation to nodes PART
 ##############################
 
-localip = socket.gethostbyname(socket.gethostname())
+def send_node_info(para_local_ipandport,para_remote_ipandport,para_jsondata):
+    conn = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    conn.bind(para_local_ipandport)
+    conn.connect(para_remote_ipandport)
+    #conn.send(f"This is{localip}, uuid is{hostid}".encode())
+    conn.send(bytes(para_jsondata,encoding="utf-8"))
+    conn.close()
+
+#DEFINE local inbound and outbound socket
+#localip = socket.gethostbyname(socket.gethostname())
 localip = "192.168.100.68"
-localport = 5001 #port can't be str
-localipandport = (localip, localport)
+local_outbound_port = 5001 #port can't be str
+local_inbound_port = 5002
+local_outbound_ipandport = (localip, local_outbound_port)
+local_inbound_ipandport = (localip, local_inbound_port)
 monitoring = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 
-
 ######################################
-##MAIN LOOP
+##MAIN LOOP    AND
+##Accepting NW connection part
 ######################################
 def client_inbound_connection(para_conn_monitor, para_localipandport):
     para_conn_monitor.bind(para_localipandport)
@@ -130,17 +131,26 @@ def client_inbound_connection(para_conn_monitor, para_localipandport):
             #return recv_json
             #para_conn_monitor.close()
 
-def send_node_info():#(para_net_conn, para_query):
+#Send updated infomation according to the list of IP address
+def traverse_and_sendinfo():#(para_net_conn, para_query):
     db_connection = conndbmod.connecting_to_db()
-    ip_list = db_search_func(db_connection, query_list_ip)
+    node_list = db_search_func(db_connection, query_list_ip)
+    json_raw = {"type":"1","data":node_list}
+    json_formatted = json.dumps(json_raw)
     i = 0
-    while i < len(ip_list):
-        print(len(ip_list))
-        print(type(ip_list[i][0]))
-        i = i + 1
+    while i < len(node_list):
+        try:
+            remoteip = node_list[i][0]
+            remote_ipandport = (remoteip,5001)
+            send_node_info(local_outbound_ipandport,remote_ipandport,json_formatted)
+            i = i + 1
+        except Exception as e:
+            print(e)
+            i = i + 1
+            continue
     
-
-send_node_info()
-
+traverse_and_sendinfo()
+    
+#send_node_info()
 
 #print(client_inbound_connection(monitoring,localipandport))
